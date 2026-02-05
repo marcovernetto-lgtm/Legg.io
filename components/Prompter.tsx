@@ -19,9 +19,19 @@ interface MediaDevice {
   label: string;
 }
 
+const AVAILABLE_FONTS = [
+  { name: 'Inter (Default)', value: "'Inter', sans-serif" },
+  { name: 'Roboto (Sans)', value: "'Roboto', sans-serif" },
+  { name: 'Merriweather (Serif)', value: "'Merriweather', serif" },
+  { name: 'Playfair (Display)', value: "'Playfair Display', serif" },
+  { name: 'Oswald (Condensed)', value: "'Oswald', sans-serif" },
+  { name: 'Mono (Code)', value: "'Roboto Mono', monospace" },
+];
+
 export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
   // Configuration State
   const [fontSize, setFontSize] = useState(64);
+  const [fontFamily, setFontFamily] = useState(AVAILABLE_FONTS[0].value);
   const [scrollSpeed, setScrollSpeed] = useState(2); 
   const [silenceThresholdSeconds, setSilenceThresholdSeconds] = useState(2);
   const [textAlign, setTextAlign] = useState<TextAlign>('center');
@@ -505,6 +515,20 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
                 </h3>
                 
                 <div className="space-y-4 bg-white/5 rounded-xl p-3 border border-white/5">
+                     
+                     {/* Font Family Selector */}
+                     <div className="relative">
+                        <select 
+                            value={fontFamily}
+                            onChange={(e) => setFontFamily(e.target.value)}
+                            className="w-full bg-zinc-900 border border-zinc-700 rounded-lg py-2 px-3 text-xs text-zinc-300 appearance-none focus:ring-1 focus:ring-blue-500 outline-none"
+                            style={{ fontFamily: fontFamily.split(',')[0].replace(/'/g, '') }}
+                        >
+                            {AVAILABLE_FONTS.map(f => <option key={f.name} value={f.value} className="text-sm">{f.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-3 top-2.5 text-zinc-500 pointer-events-none" size={12} />
+                     </div>
+
                      {/* Font Size */}
                     <div>
                         <div className="flex justify-between text-xs mb-1.5 text-zinc-300">
@@ -672,7 +696,11 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
       >
         <div 
           className={`mx-auto leading-normal transition-all duration-300 text-${textAlign}`}
-          style={{ fontSize: `${fontSize}px`, maxWidth: `${textWidth}%` }}
+          style={{ 
+              fontSize: `${fontSize}px`, 
+              maxWidth: `${textWidth}%`,
+              fontFamily: fontFamily
+          }}
         >
           {paragraphs.map((para, idx) => (
             <p key={idx} className="mb-12 text-slate-200 block drop-shadow-lg font-medium tracking-wide">
