@@ -3,6 +3,7 @@
   "description": "A smart teleprompter that scrolls automatically as you speak.",
   "requestFramePermissions": [
     "microphone",
-    "camera"
+    "camera",
+    "display-capture"
   ]
 }

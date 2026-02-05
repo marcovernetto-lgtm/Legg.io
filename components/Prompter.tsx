@@ -4,7 +4,7 @@ import {
   ArrowLeft, Play, Pause, Type, Gauge, Timer, Mic, 
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
   Video, Settings2, Circle, Square, Download, ChevronDown,
-  MoveHorizontal, Eye, Aperture, X
+  MoveHorizontal, Eye, Aperture, X, Monitor
 } from 'lucide-react';
 
 interface PrompterProps {
@@ -37,8 +37,9 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
   const [paragraphs, setParagraphs] = useState<string[]>([]);
   const [micPermission, setMicPermission] = useState<boolean | null>(null);
 
-  // Recording State
+  // Recording & Media State
   const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isScreenShareOn, setIsScreenShareOn] = useState(false); // New state for Screen Share
   const [isRecording, setIsRecording] = useState(false);
   const [videoDevices, setVideoDevices] = useState<MediaDevice[]>([]);
   const [audioDevices, setAudioDevices] = useState<MediaDevice[]>([]);
@@ -96,56 +97,96 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
     getDevices();
   }, []);
 
-  // Initialize/Update Camera Stream
-  useEffect(() => {
-    const startStream = async () => {
-      if (!isCameraOn) {
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(track => track.stop());
-          mediaStreamRef.current = null;
-        }
-        if (videoPreviewRef.current) {
-          videoPreviewRef.current.srcObject = null;
-        }
-        // If turning off camera, re-init audio only for volume analysis
-        initAudioAnalysisOnly();
-        return;
-      }
+  // --- Background Stream Logic (Camera or Screen) ---
 
+  const stopCurrentStream = () => {
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
       }
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = null;
+      }
+  };
 
+  const startCamera = async () => {
+      stopCurrentStream();
       try {
         const constraints = {
           video: selectedVideoId ? { deviceId: { exact: selectedVideoId } } : true,
           audio: selectedAudioId ? { deviceId: { exact: selectedAudioId } } : true
         };
-        
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         mediaStreamRef.current = stream;
-        
-        if (videoPreviewRef.current) {
-          videoPreviewRef.current.srcObject = stream;
-        }
-
-        // Connect to Audio Analysis
+        if (videoPreviewRef.current) videoPreviewRef.current.srcObject = stream;
         initAudioAnalysisFromStream(stream);
-
       } catch (err) {
-        console.error("Error starting stream:", err);
+        console.error("Error starting camera:", err);
         setIsCameraOn(false);
       }
-    };
+  };
 
-    startStream();
-  }, [isCameraOn, selectedVideoId, selectedAudioId]);
+  const startScreenShare = async () => {
+      stopCurrentStream();
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({ 
+            video: true, 
+            audio: false // Usually we don't need system audio for the prompter functionality
+        });
+        
+        // Handle user clicking "Stop Sharing" on the browser native UI
+        stream.getVideoTracks()[0].onended = () => {
+            setIsScreenShareOn(false);
+            stopCurrentStream();
+            initAudioAnalysisOnly(); // Revert to audio only
+        };
+
+        mediaStreamRef.current = stream;
+        if (videoPreviewRef.current) videoPreviewRef.current.srcObject = stream;
+        
+        // We still need audio analysis for the "Auto Pause" feature, so we keep the mic running separately
+        initAudioAnalysisOnly();
+
+      } catch (err) {
+        console.error("Error starting screen share:", err);
+        setIsScreenShareOn(false);
+      }
+  };
+
+  // Effect to handle switching modes
+  useEffect(() => {
+      if (isCameraOn) {
+          startCamera();
+      } else if (isScreenShareOn) {
+          startScreenShare();
+      } else {
+          stopCurrentStream();
+          // Always keep audio analysis running for silence detection if we aren't using a stream
+          initAudioAnalysisOnly();
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCameraOn, isScreenShareOn, selectedVideoId, selectedAudioId]);
+
+  // Toggle Handlers
+  const handleToggleCamera = () => {
+      if (!isCameraOn) setIsScreenShareOn(false); // Exclusive
+      setIsCameraOn(!isCameraOn);
+  };
+
+  const handleToggleScreen = () => {
+      if (!isScreenShareOn) setIsCameraOn(false); // Exclusive
+      setIsScreenShareOn(!isScreenShareOn);
+  };
 
   // --- Audio Logic ---
 
   const initAudioAnalysisOnly = async () => {
     try {
-        if (audioContextRef.current) audioContextRef.current.close();
+        if (audioContextRef.current) {
+             // Don't close if it's already running and valid, just reuse or reconnect? 
+             // Simple approach: close and recreate to switch mics if needed
+             audioContextRef.current.close();
+        }
         
         const stream = await navigator.mediaDevices.getUserMedia({ 
             audio: selectedAudioId ? { deviceId: { exact: selectedAudioId } } : true 
@@ -162,16 +203,22 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioContextClass();
       const analyser = audioCtx.createAnalyser();
-      const source = audioCtx.createMediaStreamSource(stream);
       
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      
-      audioContextRef.current = audioCtx;
-      analyserRef.current = analyser;
-      setMicPermission(true);
-      
-      analyzeVolume();
+      // If the stream has audio tracks, use them
+      if (stream.getAudioTracks().length > 0) {
+          const source = audioCtx.createMediaStreamSource(stream);
+          analyser.fftSize = 256;
+          source.connect(analyser);
+          
+          audioContextRef.current = audioCtx;
+          analyserRef.current = analyser;
+          setMicPermission(true);
+          analyzeVolume();
+      } else {
+          // If stream is video only (screen share), fetch mic separately
+          if (isScreenShareOn) initAudioAnalysisOnly();
+      }
+
     } catch (err) {
       console.error("Audio Context Error", err);
     }
@@ -229,18 +276,12 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(recordedChunks, { type: options.mimeType });
-        // Since recordedChunks state might not be fully updated inside onstop closure due to how React state works with event listeners,
-        // we usually handle blob creation in a useEffect or ensure we access the latest ref. 
-        // Ideally, we wait for the last chunk.
-        // Simplified approach: rely on the final blob creation event or rebuild it in the render/effect.
-        // Actually, let's create the URL in a separate effect that watches [recordedChunks] when !isRecording
+        // Handled by effect
       };
 
       recorder.start();
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
-      // Ensure we are playing if we start recording? Optional.
     } catch (err) {
       console.error("Failed to start recording", err);
       alert("Could not start recording. Format might not be supported.");
@@ -268,7 +309,9 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
 
   // Initial Audio Setup
   useEffect(() => {
-    initAudioAnalysisOnly();
+    if (!isCameraOn && !isScreenShareOn) {
+        initAudioAnalysisOnly();
+    }
     return () => {
       if (audioContextRef.current) audioContextRef.current.close();
     };
@@ -352,20 +395,22 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
     };
   }, [isPlaying, scrollSpeed, silenceThresholdSeconds, micPermission]);
 
+  const isBackgroundActive = isCameraOn || isScreenShareOn;
+
   return (
     <div className="relative h-screen flex flex-col bg-black overflow-hidden">
       
-      {/* --- LAYER 0: Background Camera Preview --- */}
+      {/* --- LAYER 0: Background Camera/Screen Preview --- */}
       <video 
         ref={videoPreviewRef}
         autoPlay 
         muted 
         playsInline
-        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 pointer-events-none ${isCameraOn ? 'opacity-100' : 'opacity-0'}`}
+        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 pointer-events-none ${isBackgroundActive ? 'opacity-100' : 'opacity-0'}`}
       />
 
       {/* --- LAYER 1: Vignette Effect --- */}
-      {isCameraOn && (
+      {isBackgroundActive && (
           <div 
             className="absolute inset-0 pointer-events-none transition-all duration-300"
             style={{
@@ -377,7 +422,7 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
       {/* --- LAYER 2: Customizable Dark Overlay --- */}
       <div 
         className={`absolute inset-0 bg-black transition-opacity duration-300 pointer-events-none`}
-        style={{ opacity: isCameraOn ? overlayOpacity : 1 }}
+        style={{ opacity: isBackgroundActive ? overlayOpacity : 1 }}
       ></div>
 
       {/* --- LAYER 3: UI & Text --- */}
@@ -401,13 +446,23 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
 
           <Button 
             variant={isCameraOn ? "primary" : "secondary"}
-            onClick={() => setIsCameraOn(!isCameraOn)}
+            onClick={handleToggleCamera}
             icon={<Video size={18} />}
+            title="Toggle Webcam"
           >
-            {isCameraOn ? "Cam" : "Cam Off"}
+            {isCameraOn ? "Cam" : "Cam"}
           </Button>
 
-          {isCameraOn && (
+          <Button 
+            variant={isScreenShareOn ? "primary" : "secondary"}
+            onClick={handleToggleScreen}
+            icon={<Monitor size={18} />}
+            title="Background Window"
+          >
+            {isScreenShareOn ? "Window" : "Window"}
+          </Button>
+
+          {isBackgroundActive && (
             <Button 
               variant={isRecording ? "danger" : "ghost"}
               className={isRecording ? "animate-pulse border border-red-400 bg-red-900/50" : "text-red-400 hover:bg-red-900/20"}
@@ -492,8 +547,8 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
                 </div>
             </div>
 
-            {/* Section: Visual Effects (New!) */}
-            {isCameraOn && (
+            {/* Section: Visual Effects */}
+            {isBackgroundActive && (
                 <div className="space-y-3 animate-in fade-in slide-in-from-right-4 duration-300">
                     <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-2">
                         <Aperture size={12} /> Visual Effects
@@ -582,7 +637,7 @@ export const Prompter: React.FC<PrompterProps> = ({ script, onBack }) => {
                             value={selectedVideoId}
                             onChange={(e) => setSelectedVideoId(e.target.value)}
                             className="w-full bg-zinc-900 border border-zinc-700 rounded-lg py-2 px-3 text-xs text-zinc-300 appearance-none focus:ring-1 focus:ring-blue-500 outline-none"
-                            disabled={isRecording}
+                            disabled={isRecording || isScreenShareOn}
                         >
                             {videoDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
                         </select>
